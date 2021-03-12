@@ -1,0 +1,25 @@
+# open-cas-generator
+#
+# Copyright(c) 2020 Intel Corporation
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+#
+
+[Unit]
+Description=Open CAS service on $device
+DefaultDependencies=no
+Wants=$parent_unit
+After=$parent_unit
+PartOf=open-cas.target $parent_unit
+Before=local-fs-pre.target open-cas.target systemd-udevd.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+RemainAfterExit=yes
+Restart=on-abnormal
+ExecStart=/sbin/cas-service $unit_type $unit_id $device
+TimeoutStartSec=$timeout
+
+[Install]
+$dependency=open-cas.target
+WantedBy=$parent_unit

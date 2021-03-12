@@ -9,12 +9,8 @@ import opencas
 import sys
 import os
 import syslog as sl
-
-try:
-    subprocess.call(['/sbin/modprobe', 'cas_cache'])
-except:
-    sl.syslog(sl.LOG_ERR, 'Unable to probe cas_cache module')
-    exit(1)
+import socket
+import time
 
 try:
     config = opencas.cas_config.from_file('/etc/opencas/opencas.conf',
@@ -23,25 +19,41 @@ except Exception as e:
     sl.syslog(sl.LOG_ERR, f'Unable to load opencas config. Reason: {str(e)}')
     exit(1)
 
+def notify_service(device):
+    service_socket_addr = "/var/cas_{unit_type}{unit_id}.sock"
+    if isinstance(device, opencas.cas_config.cache_config):
+        service_socket_addr = service_socket_addr.format(unit_type="cache", unit_id=device.cache_id)
+    else:
+        service_socket_addr = service_socket_addr.format(unit_type="core",
+                unit_id=f"{device.cache_id}-{device.core_id}")
+
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(10)
+    for i in range(10):
+        if os.path.exists(service_socket_addr):
+            s.connect(service_socket_addr)
+            s.sendall(sys.argv[1].encode("ascii"))
+            s.recv(4096)
+            return True
+
+        time.sleep(1)
+
+    return False
+
 for cache in config.caches.values():
     if sys.argv[1] == os.path.realpath(cache.device):
-        try:
-            opencas.wait_for_cas_ctrl()
-            opencas.start_cache(cache, True)
-        except opencas.casadm.CasadmError as e:
-            sl.syslog(sl.LOG_WARNING,
-                      f'Unable to load cache {cache.cache_id} ({cache.device}). '
-                      f'Reason: {e.result.stderr}')
-            exit(e.result.exit_code)
-        exit(0)
+        notified = notify_service(cache)
+        if notified:
+            exit(0)
+        else:
+            sl.syslog(sl.LOG_ERR, f'Unable to notify CAS service on {cache.device}')
+            exit(1)
     for core in cache.cores.values():
         if sys.argv[1] == os.path.realpath(core.device):
-            try:
-                opencas.wait_for_cas_ctrl()
-                opencas.add_core(core, True)
-            except opencas.casadm.CasadmError as e:
-                sl.syslog(sl.LOG_WARNING,
-                          f'Unable to attach core {core.device} from cache {cache.cache_id}. '
-                          f'Reason: {e.result.stderr}')
-                exit(e.result.exit_code)
-            exit(0)
+            notified = notify_service(core)
+            if notified:
+                exit(0)
+            else:
+                sl.syslog(sl.LOG_ERR, f'Unable to notify CAS service on {core.device}')
+                exit(1)
+

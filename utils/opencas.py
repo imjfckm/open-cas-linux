@@ -789,6 +789,7 @@ def get_devices_state():
 
 
 def wait_for_cas_ctrl():
+    subprocess.run(["/sbin/modprobe", "cas_cache"])
     for i in range(30):  # timeout 30s
         if os.path.exists('/dev/cas_ctrl'):
             return
@@ -820,15 +821,19 @@ def _get_uninitialized_devices(target_dev_state):
 
     return not_initialized
 
+def start_device(dev):
+    try:
+        if type(dev) is cas_config.core_config:
+            add_core(dev, True)
+            return True, ""
+        elif type(dev) is cas_config.cache_config:
+            start_cache(dev, True)
+            return True, ""
+    except casadm.CasadmError as e:
+        return False, e.result.stderr
+
 
 def wait_for_startup(timeout=300, interval=5):
-    def start_device(dev):
-        if os.path.exists(dev.device):
-            if type(dev) is cas_config.core_config:
-                add_core(dev, True)
-            elif type(dev) is cas_config.cache_config:
-                start_cache(dev, True)
-
     stop_time = time.time() + int(timeout)
 
     try:

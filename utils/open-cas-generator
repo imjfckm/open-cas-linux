@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+
+#
+# Copyright(c) 2020 Intel Corporation
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+#
+
+CAS_LIB_PATH="/lib/opencas"
+import sys
+import os
+from pathlib import Path
+from string import Template
+import subprocess
+
+sys.path.append(CAS_LIB_PATH)
+from opencas import cas_config
+
+TEMPLATE_PATH=CAS_LIB_PATH+"/cas-service.template"
+CORE_UNIT_NAME="cas-core{}-{}.service"
+CACHE_UNIT_NAME="cas-cache{}.service"
+
+SYSTEMD_ESCAPE_PATH="/bin/systemd-escape"
+
+def systemd_escape(name):
+    p = subprocess.run([SYSTEMD_ESCAPE_PATH, "-p", name], stdout=subprocess.PIPE)
+    output = p.stdout.decode().strip()
+    if p.returncode != 0 or not output:
+        return name
+
+    return output
+
+def log(msg):
+    with open("/dev/kmsg", "w") as f:
+        f.write(f"open-cas-generator: {msg}\n")
+
+def create_dep_directory(units_path, unit, dependency):
+    mode = os.stat(units_path).st_mode
+
+    path = units_path.joinpath(f"{unit}.{dependency}")
+    try:
+        os.mkdir(path, mode)
+    except FileExistsError:
+        pass
+    return path
+
+def main():
+    try:
+        config = cas_config.from_file(cas_config.default_location, allow_incomplete = True)
+    except:
+        log(f"Failed loading CAS config")
+        return (1)
+
+    log("Setting up CAS services")
+
+    if config.is_empty():
+        return 0
+
+    normal_generators = Path(sys.argv[1])
+
+    cas_target_wants_path = create_dep_directory(normal_generators, "open-cas.target", "wants")
+    cas_target_requires_path = create_dep_directory(normal_generators, "open-cas.target", "requires")
+
+    with open(TEMPLATE_PATH, "r") as f:
+        template = Template(f.read())
+
+    cache_dep_paths = {}
+    for cache in config.caches.values():
+        unit_file = normal_generators.joinpath(CACHE_UNIT_NAME.format(cache.cache_id))
+        service = template.substitute(
+                device=cache.device,
+                parent_unit="",
+                unit_type="cache",
+                unit_id=cache.cache_id,
+                timeout="2m",
+                dependency="WantedBy" if cache.is_lazy() else "RequiredBy",
+        )
+
+        with open(unit_file, "w") as f:
+            f.write(service)
+
+        cache_dep_paths[cache.cache_id] = create_dep_directory(normal_generators, unit_file.name, "wants")
+
+        if cache.is_lazy():
+            os.symlink(unit_file, cas_target_wants_path.joinpath(unit_file.name))
+        else:
+            os.symlink(unit_file, cas_target_requires_path.joinpath(unit_file.name))
+
+    for core in config.cores:
+        unit_file = normal_generators.joinpath(
+                CORE_UNIT_NAME.format(core.cache_id, core.core_id)
+        )
+        service = template.substitute(
+                device=core.device,
+                parent_unit=CACHE_UNIT_NAME.format(core.cache_id),
+                unit_type="core",
+                unit_id=f"{core.cache_id}-{core.core_id}",
+                timeout="1m",
+                dependency="WantedBy" if core.is_lazy() else "RequiredBy",
+        )
+
+        with open(unit_file, "w") as f:
+            f.write(service)
+
+        os.symlink(unit_file, cache_dep_paths[core.cache_id].joinpath(unit_file.name))
+
+        if core.is_lazy():
+            os.symlink(unit_file, cas_target_wants_path.joinpath(unit_file.name))
+        else:
+            os.symlink(unit_file, cas_target_requires_path.joinpath(unit_file.name))
+
+    log(f"Created {len(config.caches)} cache units and {len(config.cores)} core units")
+
+if __name__ == "__main__":
+    sys.exit(main())
